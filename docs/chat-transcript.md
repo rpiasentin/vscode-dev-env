@@ -179,3 +179,37 @@ Assistant response:
 - Rendered new video:
   - `output/presentations/frontier-operations-cisco-template-5min-elevenlabs-cgSmK51y.mp4`
 - Copied MP4 + metadata to Dropbox presentation folder.
+
+## 16) Slide/audio mismatch fix request
+User request:
+- Reported mismatch between audio (correct) and slide content.
+- Requested updating the presentation to match the script, then rerunning.
+- Asked to see modified presentation before rerun.
+
+Assistant response:
+- Confirmed mismatch was due slide sequence/content not matching markdown script sections.
+- Built a script-aligned presentation update with titles and content mapped to:
+  1. The New Career Skill: Operating on the AI Frontier
+  2. The Five Frontier Operations Capabilities
+  3. How Organizations Should Respond
+  4. Team Design, Hiring, and Management Signals
+  5. 90-Day Implementation Plan and Outcomes
+- Exported slide preview images for review prior to rerender.
+
+## 17) Add references + rerun request
+User request:
+- Approved rerun, with added references:
+  - video URL
+  - ElevenLabs URL
+  - skills used
+- Requested rerun after those additions.
+
+Assistant response:
+- Updated script-aligned presentation with explicit references block (slide 5):
+  - `https://www.youtube.com/watch?v=RnjgLlQTMf0`
+  - `https://elevenlabs.io/`
+  - Skills used: transcribe + speech, plus skills catalog URL.
+- Reran video generation with existing ElevenLabs audio set.
+- Produced updated output:
+  - `output/presentations/frontier-operations-cisco-template-5min-elevenlabs-cgSmK51y-script-aligned-with-refs.mp4`
+- Copied updated PPTX + MP4 + metadata to Dropbox presentation folder.
