@@ -140,3 +140,42 @@ Assistant response:
   - `output/presentations/frontier-operations-cisco-template-5min-elevenlabs-from-md.mp4`
 - Output runtime is approximately 296.50 seconds (~4m 56s).
 - Credentials are treated as sensitive and are not persisted in repo files.
+
+## 13) Voice quality improvement request
+User request:
+- Asked how to get a higher-quality version of their voice in ElevenLabs.
+
+Assistant response:
+- Provided a focused quality improvement plan:
+  - Prefer Professional Voice Cloning for best fidelity.
+  - Improve training data quality/consistency (single speaker, clean environment, strong mic signal).
+  - Tune generation settings with style exaggeration near 0, speaker boost enabled, and careful similarity/stability balancing.
+  - Validate with short A/B tests before full regeneration.
+
+## 14) ElevenLabs run with markdown script source
+User request:
+- Confirmed script source is attached markdown file (not slide notes).
+- Requested live run using supplied ElevenLabs API key and voice id.
+
+Assistant response:
+- Ran full pipeline with:
+  - Dropbox PPTX source
+  - Markdown script source
+  - ElevenLabs voice generation
+- Produced final output:
+  - `output/presentations/frontier-operations-cisco-template-5min-elevenlabs-from-md.mp4`
+- Copied output and metadata into Dropbox presentation folder.
+- Logged security reminder to rotate API key pasted in chat.
+
+## 15) New ElevenLabs voice ID run
+User request:
+- Provided new voice id: `cgSmK51yDkl3fglM1Uio`
+- Requested regeneration with this voice.
+
+Assistant response:
+- Re-ran the full markdown-script pipeline with the new voice id.
+- Generated new per-slide audio under:
+  - `output/presentations/frontier-ops-elevenlabs-audio-cgSmK51y/`
+- Rendered new video:
+  - `output/presentations/frontier-operations-cisco-template-5min-elevenlabs-cgSmK51y.mp4`
+- Copied MP4 + metadata to Dropbox presentation folder.
