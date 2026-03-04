@@ -1,2 +1,9 @@
 .DS_Store
 .notes_access/
+.venv-pptx-transcribe/
+tmp/
+output/
+outlook-agent/.env
+outlook-agent/__pycache__/
+outlook-agent/outlook_agent/__pycache__/
+outlook-agent/logs/

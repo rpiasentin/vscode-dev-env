@@ -25,3 +25,23 @@ This repo contains my global VS Code configuration so I can recreate my setup on
 
 4. Open VS Code and turn on Settings Sync (sign in with GitHub).
 
+## Workspace Tooling: PowerPoint + YouTube Transcript
+
+This workspace also includes local automation for:
+
+- PowerPoint prep dependencies (`python-pptx`)
+- YouTube URL transcript retrieval (captions-first, with OpenAI fallback)
+
+Setup:
+
+```bash
+./tools/setup_pptx_transcribe.sh
+```
+
+Run transcript workflow:
+
+```bash
+./tools/youtube_to_transcript.sh "https://www.youtube.com/watch?v=<video-id>"
+```
+
+Details: `docs/pptx-youtube-transcript-setup.md`
