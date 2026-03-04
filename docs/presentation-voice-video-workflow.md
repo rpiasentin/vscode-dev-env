@@ -127,3 +127,14 @@ Output:
 ```text
 /Users/rpias/dev/vscode-dev-env/output/presentations/frontier-operations-cisco-template-5min-elevenlabs.mp4
 ```
+
+Use a dedicated markdown script instead of slide notes:
+
+```bash
+tools/render_frontier_ops_cisco_with_elevenlabs.sh \
+  --pptx "/Users/rpias/Dropbox/new job 2025/presentation on ai/frontier-operations-cisco-template-5min.pptx" \
+  --script-md "/Users/rpias/Dropbox/new job 2025/presentation on ai/frontier-ops-speaker-script.md" \
+  --script-out-dir "/Users/rpias/dev/vscode-dev-env/output/presentations/frontier-ops-elevenlabs-script-from-md" \
+  --audio-out-dir "/Users/rpias/dev/vscode-dev-env/output/presentations/frontier-ops-elevenlabs-audio-from-md" \
+  --video-out "/Users/rpias/dev/vscode-dev-env/output/presentations/frontier-operations-cisco-template-5min-elevenlabs-from-md.mp4"
+```

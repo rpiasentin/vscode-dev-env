@@ -112,3 +112,17 @@ Assistant response:
 - Ran preview successfully on the Dropbox deck path and exported slide scripts for that source.
 - Prepared to run full ElevenLabs generation once API key and voice id are provided.
 - Proceeded to commit automation/docs updates to the repo.
+
+## 11) Script source correction (use attached markdown)
+User request:
+- Clarified script source is markdown file:
+  - `/Users/rpias/Dropbox/new job 2025/presentation on ai/frontier-ops-speaker-script.md`
+
+Assistant response:
+- Switched ElevenLabs pipeline to support `--script-md` source.
+- Added parser:
+  - `tools/prepare_slide_scripts_from_markdown.py`
+- Updated wrapper to enforce markdown slide count matches PPTX slide count.
+- Verified preview run using:
+  - Dropbox PPTX + attached markdown script.
+- Updated workflow docs with the new `--script-md` usage.

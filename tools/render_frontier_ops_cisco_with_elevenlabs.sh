@@ -9,6 +9,7 @@ PPTX_PATH="${REPO_ROOT}/output/presentations/frontier-operations-cisco-template-
 SCRIPT_OUT_DIR="${REPO_ROOT}/output/presentations/frontier-ops-elevenlabs-script"
 AUDIO_OUT_DIR="${REPO_ROOT}/output/presentations/frontier-ops-elevenlabs-audio"
 VIDEO_OUT_PATH="${REPO_ROOT}/output/presentations/frontier-operations-cisco-template-5min-elevenlabs.mp4"
+SCRIPT_MD_PATH=""
 
 VOICE_ID="${ELEVENLABS_VOICE_ID:-}"
 AUDIO_SPEED="1.0"
@@ -26,6 +27,7 @@ Options:
   --script-out-dir <dir> Output directory for slideXX.txt scripts
   --audio-out-dir <dir>  Output directory for generated slide audio
   --video-out <path>     Output narrated MP4 path
+  --script-md <path>     Markdown script source (uses Slide 1..N headings)
   --voice-id <id>        ElevenLabs voice id (overrides ELEVENLABS_VOICE_ID)
   --audio-speed <value>  Narration speed multiplier in render step (default: 1.0)
   --concat-mode <mode>   auto|copy|reencode (default: reencode)
@@ -55,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --video-out)
       VIDEO_OUT_PATH="$2"
+      shift 2
+      ;;
+    --script-md)
+      SCRIPT_MD_PATH="$2"
       shift 2
       ;;
     --voice-id)
@@ -104,6 +110,14 @@ if [[ ! -f "${PPTX_PATH}" ]]; then
   exit 1
 fi
 
+if [[ -n "${SCRIPT_MD_PATH}" ]]; then
+  SCRIPT_MD_PATH="$(cd "$(dirname "${SCRIPT_MD_PATH}")" && pwd)/$(basename "${SCRIPT_MD_PATH}")"
+  if [[ ! -f "${SCRIPT_MD_PATH}" ]]; then
+    echo "Error: markdown script not found: ${SCRIPT_MD_PATH}" >&2
+    exit 1
+  fi
+fi
+
 if [[ "${PREVIEW_ONLY}" != "1" ]]; then
   if [[ -z "${ELEVENLABS_API_KEY:-}" ]]; then
     echo "Error: ELEVENLABS_API_KEY is not set" >&2
@@ -117,10 +131,29 @@ fi
 
 mkdir -p "${SCRIPT_OUT_DIR}" "${AUDIO_OUT_DIR}"
 
-echo "[pipeline] Exporting slide notes..."
-"${PYTHON_BIN}" "${REPO_ROOT}/tools/export_slide_notes_for_recording.py" \
-  --pptx "${PPTX_PATH}" \
-  --out-dir "${SCRIPT_OUT_DIR}"
+if [[ -n "${SCRIPT_MD_PATH}" ]]; then
+  SLIDE_COUNT="$("${PYTHON_BIN}" - <<PY
+import re, zipfile
+p="${PPTX_PATH}"
+n=0
+with zipfile.ZipFile(p, "r") as z:
+    for name in z.namelist():
+        if re.match(r"ppt/slides/slide\\d+\\.xml$", name):
+            n += 1
+print(n)
+PY
+)"
+  echo "[pipeline] Building slide scripts from markdown: ${SCRIPT_MD_PATH}"
+  "${PYTHON_BIN}" "${REPO_ROOT}/tools/prepare_slide_scripts_from_markdown.py" \
+    --md "${SCRIPT_MD_PATH}" \
+    --out-dir "${SCRIPT_OUT_DIR}" \
+    --expected-slides "${SLIDE_COUNT}"
+else
+  echo "[pipeline] Exporting slide notes..."
+  "${PYTHON_BIN}" "${REPO_ROOT}/tools/export_slide_notes_for_recording.py" \
+    --pptx "${PPTX_PATH}" \
+    --out-dir "${SCRIPT_OUT_DIR}"
+fi
 
 if [[ "${PREVIEW_ONLY}" == "1" ]]; then
   echo "[pipeline] Preview mode: skipping ElevenLabs generation and video render."
