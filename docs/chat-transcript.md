@@ -126,3 +126,17 @@ Assistant response:
 - Verified preview run using:
   - Dropbox PPTX + attached markdown script.
 - Updated workflow docs with the new `--script-md` usage.
+
+## 12) ElevenLabs live run with provided credentials
+User request:
+- Provided ElevenLabs API key and voice ID inline in chat.
+- Requested live generation and render execution.
+
+Assistant response:
+- Executed full pipeline using markdown script + Dropbox PPTX source.
+- Generated per-slide ElevenLabs audio files:
+  - `output/presentations/frontier-ops-elevenlabs-audio-from-md/slide01.mp3` ... `slide05.mp3`
+- Rendered final narrated video:
+  - `output/presentations/frontier-operations-cisco-template-5min-elevenlabs-from-md.mp4`
+- Output runtime is approximately 296.50 seconds (~4m 56s).
+- Credentials are treated as sensitive and are not persisted in repo files.
