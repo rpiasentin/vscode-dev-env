@@ -7,3 +7,4 @@ outlook-agent/.env
 outlook-agent/__pycache__/
 outlook-agent/outlook_agent/__pycache__/
 outlook-agent/logs/
+tools/cisco_org_overlay/node_modules/

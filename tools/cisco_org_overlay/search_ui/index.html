@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cisco Org Search</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%230f766e'/%3E%3Cpath d='M18 30c5-10 23-12 31-4-8 10-26 12-31 4Z' fill='%23fff7ed'/%3E%3Ccircle cx='43' cy='24' r='5' fill='%23f59e0b'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="panel hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Local-only Cisco org search</p>
+          <h1>Search people, docs, and crawl status without writing SQL.</h1>
+          <p class="hero-text">
+            This UI stays on <code>127.0.0.1</code>, reads the SQLite databases in read-only mode,
+            and lets you move between broad searches and deeper record inspection quickly.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <span class="quick-label">Quick starts</span>
+          <div class="quick-examples">
+            <button class="chip quick-example" data-query="Jeetu Patel" data-databases="jeetu">Jeetu Patel</button>
+            <button class="chip quick-example" data-query="icastrov" data-databases="oliver" data-scopes="manager_checks">Oliver deficit</button>
+            <button class="chip quick-example" data-query="org chart" data-databases="generic" data-scopes="documents">Org chart docs</button>
+            <button class="chip quick-example" data-query="8145 3000" data-databases="jeetu" data-scopes="snapshots" data-deep="true">Phone in snapshots</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="panel crawler-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Crawler progress</p>
+            <h2>Focused refresh monitor</h2>
+          </div>
+          <div class="section-head-actions">
+            <button id="refresh-crawler-progress" class="ghost-button" type="button">Refresh progress</button>
+            <div id="crawler-progress-status" class="microcopy">Checking crawler state…</div>
+          </div>
+        </div>
+        <div id="crawler-progress" class="crawler-progress-grid">
+          <div class="empty-state">
+            <h3>Watching local crawlers</h3>
+            <p>Progress appears here without exposing raw directory records.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="column column-left">
+          <section class="panel search-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Search</p>
+                <h2>Build a query</h2>
+              </div>
+            </div>
+
+            <form id="search-form" class="search-form">
+              <label class="field">
+                <span class="field-label">Query</span>
+                <textarea id="query-input" name="query" rows="3" placeholder="Try a name, alias, title, phone fragment, or document phrase"></textarea>
+              </label>
+
+              <div class="field-group">
+                <div class="field">
+                  <span class="field-label">Databases</span>
+                  <div id="database-selector" class="selector-grid"></div>
+                </div>
+
+                <div class="field">
+                  <div class="field-line">
+                    <span class="field-label">Scopes</span>
+                    <span class="field-note">Leave clear to use each database's defaults.</span>
+                  </div>
+                  <div id="scope-selector" class="selector-grid selector-grid-scopes"></div>
+                </div>
+              </div>
+
+              <div class="controls-row">
+                <label class="field compact-field">
+                  <span class="field-label">Match</span>
+                  <select id="match-mode" name="mode">
+                    <option value="all">All terms</option>
+                    <option value="any">Any term</option>
+                    <option value="whole">Whole terms</option>
+                    <option value="phrase">Exact phrase</option>
+                  </select>
+                </label>
+
+                <label class="field compact-field">
+                  <span class="field-label">Page size</span>
+                  <input id="limit-input" name="limit" type="number" min="1" max="250" value="25">
+                </label>
+
+                <label class="toggle">
+                  <input id="deep-input" name="deep" type="checkbox">
+                  <span>Include raw JSON and metadata</span>
+                </label>
+              </div>
+
+              <div class="action-row">
+                <button id="search-button" class="primary-button" type="submit">Run search</button>
+                <button id="reset-button" class="secondary-button" type="button">Reset</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel health-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Database health</p>
+                <h2>Local sources</h2>
+              </div>
+              <button id="refresh-health" class="ghost-button" type="button">Refresh</button>
+            </div>
+            <div id="health-status" class="microcopy">Checking local database access…</div>
+            <div id="database-health" class="health-grid"></div>
+          </section>
+        </aside>
+
+        <main class="column column-main">
+          <section class="panel org-chart-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Output</p>
+                <h2>Org chart</h2>
+              </div>
+            </div>
+            <div id="chart-status" class="status-banner" hidden></div>
+            <div id="org-chart" class="org-chart">
+              <div class="empty-state">
+                <h3>No chart yet</h3>
+                <p>Select chartable generic, Jeetu, or Oliver people from the results, then build a peer group and leader chain.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel results-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Results</p>
+                <h2>Matches</h2>
+              </div>
+              <div class="section-head-actions">
+                <div id="result-summary" class="microcopy">Run a search to populate this list.</div>
+                <div class="results-actions">
+                  <button id="export-markdown" class="ghost-button" type="button" disabled>Export .md</button>
+                  <button id="build-org-chart" class="ghost-button" type="button" disabled>Build chart</button>
+                  <button id="clear-org-chart" class="ghost-button" type="button" disabled>Clear picks</button>
+                </div>
+                <div id="chart-selection-summary" class="microcopy">Select chartable people rows to chart peers and leaders.</div>
+              </div>
+            </div>
+            <div id="search-status" class="status-banner" hidden></div>
+            <div id="pagination-top" class="pagination-controls" hidden></div>
+            <div id="results-list" class="results-list">
+              <div class="empty-state">
+                <h3>Ready when you are</h3>
+                <p>The result list will show concise cards here, and selecting one will open its structured details on the right.</p>
+              </div>
+            </div>
+            <div id="pagination-bottom" class="pagination-controls" hidden></div>
+          </section>
+        </main>
+
+        <aside class="column column-right">
+          <section class="panel detail-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Inspector</p>
+                <h2>Selected record</h2>
+              </div>
+              <button id="copy-json" class="ghost-button" type="button" disabled>Copy JSON</button>
+            </div>
+            <div id="detail-pane" class="detail-pane">
+              <div class="empty-state compact-empty">
+                <h3>No record selected</h3>
+                <p>Choose a result card to inspect its structured fields and JSON payload.</p>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </section>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

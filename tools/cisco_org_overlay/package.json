@@ -1,0 +1,11 @@
+{
+  "name": "cisco-org-overlay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "hardened-session": "node hardened_session.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.53.0"
+  }
+}
