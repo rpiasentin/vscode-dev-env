@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sqlite3
 import traceback
 from collections import deque
@@ -125,6 +126,21 @@ CREATE INDEX IF NOT EXISTS idx_org_edges_child_active
 CREATE INDEX IF NOT EXISTS idx_org_edge_observations_run_parent
     ON org_edge_observations(crawl_run_id, parent_alias, child_alias);
 """
+
+AUTH_EXPIRED_EXIT_CODE = 75
+AUTH_EXPIRED_STATUSES = {401}
+SKIPPABLE_MANAGER_STATUSES = ("complete", "leaf", "fetch_404")
+
+
+class AuthExpiredError(RuntimeError):
+    """Raised when the crawler should stop cleanly so the supervisor can refresh auth."""
+
+    def __init__(self, stage: str, alias: str, status: Optional[int], url: str) -> None:
+        super().__init__(f"auth expired during {stage} fetch alias={alias} status={status} url={url}")
+        self.stage = stage
+        self.alias = alias
+        self.status = status
+        self.url = url
 
 
 @dataclass(frozen=True)
@@ -394,6 +410,15 @@ def fetch_direct_reports(opener: Any, alias: str) -> List[Dict[str, Any]]:
     return base.fetch_all_direct_reports(opener, alias)
 
 
+def is_auth_expired(exc: base.FetchError) -> bool:
+    return exc.status in AUTH_EXPIRED_STATUSES
+
+
+def raise_auth_expired(stage: str, alias: str, exc: base.FetchError, paths: OutputPaths) -> None:
+    log(f"auth expired during {stage} fetch alias={alias} status={exc.status} url={exc.url}", paths)
+    raise AuthExpiredError(stage=stage, alias=alias, status=exc.status, url=exc.url) from exc
+
+
 def start_run(conn: sqlite3.Connection, root_alias: str, notes: str) -> int:
     cur = conn.execute(
         "INSERT INTO crawl_runs (started_at, status, root_alias, notes) VALUES (?, 'running', ?, ?)",
@@ -413,6 +438,36 @@ def finish_run(conn: sqlite3.Connection, run_id: int, status: str) -> None:
 
 def latest_run(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     return conn.execute("SELECT * FROM crawl_runs ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def refresh_anchor_from_notes(notes: Optional[str], fallback_run_id: Optional[int] = None) -> Optional[int]:
+    if not notes:
+        return fallback_run_id
+    match = re.search(r"refresh-resume from run=(\d+)", notes)
+    if match:
+        return int(match.group(1))
+    if "refresh-existing" in notes:
+        return fallback_run_id
+    return None
+
+
+def latest_incomplete_refresh_anchor(conn: sqlite3.Connection) -> Optional[int]:
+    row = conn.execute(
+        """
+        SELECT id, notes
+        FROM crawl_runs
+        WHERE status IN ('auth_expired', 'failed', 'running')
+          AND (
+              notes LIKE '%refresh-existing%'
+              OR notes LIKE '%refresh-resume from run=%'
+          )
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return None
+    return refresh_anchor_from_notes(row["notes"], int(row["id"]))
 
 
 def upsert_person(conn: sqlite3.Connection, run_id: int, person: Dict[str, Any]) -> None:
@@ -603,10 +658,38 @@ def known_aliases(conn: sqlite3.Connection) -> set[str]:
 
 
 def checked_aliases(conn: sqlite3.Connection) -> set[str]:
+    placeholders = ",".join("?" for _ in SKIPPABLE_MANAGER_STATUSES)
     return {
         row["alias"]
         for row in conn.execute(
-            "SELECT alias FROM manager_checks WHERE status IN ('complete','leaf','deficit','fetch_404')"
+            f"SELECT alias FROM manager_checks WHERE status IN ({placeholders})",
+            SKIPPABLE_MANAGER_STATUSES,
+        )
+    }
+
+
+def refreshed_aliases_since(conn: sqlite3.Connection, run_floor: int) -> set[str]:
+    return {
+        row["alias"]
+        for row in conn.execute(
+            "SELECT alias FROM people WHERE COALESCE(last_run_id, 0) >= ?",
+            (run_floor,),
+        )
+    }
+
+
+def checked_aliases_since(conn: sqlite3.Connection, run_floor: int) -> set[str]:
+    placeholders = ",".join("?" for _ in SKIPPABLE_MANAGER_STATUSES)
+    return {
+        row["alias"]
+        for row in conn.execute(
+            f"""
+            SELECT alias
+            FROM manager_checks
+            WHERE COALESCE(crawl_run_id, 0) >= ?
+              AND status IN ({placeholders})
+            """,
+            (run_floor, *SKIPPABLE_MANAGER_STATUSES),
         )
     }
 
@@ -900,12 +983,89 @@ def build_resume_queue(conn: sqlite3.Connection, root_alias: str) -> Tuple[Deque
     return queue, seen, parent_map
 
 
+def build_resume_refresh_queue(
+    conn: sqlite3.Connection,
+    root_alias: str,
+    run_floor: int,
+) -> Tuple[Deque[str], set[str], set[str], Dict[str, Optional[str]]]:
+    """Resume a failed refresh pass, only skipping entities refreshed since the anchor run."""
+    seen = refreshed_aliases_since(conn, run_floor)
+    checked = checked_aliases_since(conn, run_floor)
+    queue: Deque[str] = deque()
+    enqueued: set[str] = set()
+    parent_map: Dict[str, Optional[str]] = {root_alias: None}
+    permanently_unresolved = {
+        row["alias"]
+        for row in conn.execute(
+            "SELECT alias FROM unresolved_aliases WHERE status='profile_404'"
+        )
+    }
+
+    def add(alias: Optional[str], parent_alias: Optional[str] = None) -> None:
+        if not alias or alias in permanently_unresolved:
+            return
+        if parent_alias is not None:
+            parent_map.setdefault(alias, parent_alias)
+        if alias in enqueued:
+            return
+        enqueued.add(alias)
+        queue.append(alias)
+
+    if root_alias not in seen or root_alias not in checked:
+        add(root_alias)
+
+    for row in conn.execute(
+        """
+        SELECT child_alias, MIN(parent_alias) AS parent_alias
+        FROM org_edges
+        WHERE COALESCE(active,1)=1
+          AND child_alias NOT IN (SELECT alias FROM people)
+        GROUP BY child_alias
+        ORDER BY child_alias
+        """
+    ):
+        add(row["child_alias"], row["parent_alias"])
+
+    for row in conn.execute(
+        """
+        SELECT alias FROM manager_checks
+        WHERE status IN ('deficit','transient_error','unchecked')
+        ORDER BY alias
+        """
+    ):
+        add(row["alias"])
+
+    placeholders = ",".join("?" for _ in SKIPPABLE_MANAGER_STATUSES)
+    for row in conn.execute(
+        f"""
+        SELECT p.alias
+        FROM people p
+        LEFT JOIN manager_checks m
+          ON m.alias = p.alias
+         AND COALESCE(m.crawl_run_id, 0) >= ?
+         AND m.status IN ({placeholders})
+        WHERE COALESCE(p.last_run_id, 0) < ?
+           OR m.alias IS NULL
+        ORDER BY p.alias
+        """,
+        (run_floor, *SKIPPABLE_MANAGER_STATUSES, run_floor),
+    ):
+        add(row["alias"])
+
+    if not queue:
+        add(root_alias)
+
+    return queue, seen, checked, parent_map
+
+
 def crawl(
     config: FocusConfig,
     root_alias: Optional[str] = None,
     fresh: bool = False,
     resume: bool = False,
     refresh_existing: bool = False,
+    resume_refresh: bool = False,
+    resume_refresh_from_run: Optional[int] = None,
     output_root: Optional[Path] = None,
 ) -> int:
     effective_root = root_alias or config.default_root_alias
@@ -916,15 +1076,35 @@ def crawl(
     base.configure_active_headers(config.extra_headers_path)
     opener = base.build_opener(config.storage_state_path)
 
-    mode = "refresh-existing" if refresh_existing and not fresh else "resume" if resume and not fresh else "fresh"
+    refresh_anchor_run_id: Optional[int] = None
+    if resume_refresh and not fresh and not refresh_existing:
+        refresh_anchor_run_id = resume_refresh_from_run or latest_incomplete_refresh_anchor(conn)
+        if refresh_anchor_run_id is None:
+            raise RuntimeError("no incomplete refresh run found; pass --resume-refresh-from-run")
+
+    if refresh_existing and not fresh:
+        mode = "refresh-existing"
+    elif resume_refresh and not fresh:
+        mode = f"refresh-resume from run={refresh_anchor_run_id}"
+    elif resume and not fresh:
+        mode = "resume"
+    else:
+        mode = "fresh"
     run_id = start_run(conn, effective_root, f"{config.crawl_label} ({mode})")
     log(
         f"starting {config.slug}-focused crawl run={run_id} root={effective_root} mode={mode} output_root={paths.output_root}",
         paths,
     )
 
-    checked = checked_aliases(conn) if resume and not fresh and not refresh_existing else set()
-    if resume and not fresh and not refresh_existing:
+    checked = checked_aliases(conn) if resume and not fresh and not refresh_existing and not resume_refresh else set()
+    if resume_refresh and not fresh and not refresh_existing:
+        assert refresh_anchor_run_id is not None
+        queue, seen, checked, parent_map = build_resume_refresh_queue(conn, effective_root, refresh_anchor_run_id)
+        log(
+            f"resuming failed refresh from run={refresh_anchor_run_id} queue={len(queue)} refreshed_people={len(seen)} checked={len(checked)}",
+            paths,
+        )
+    elif resume and not fresh and not refresh_existing:
         queue, seen, parent_map = build_resume_queue(conn, effective_root)
     else:
         seen = set() if refresh_existing else known_aliases(conn)
@@ -946,6 +1126,8 @@ def crawl(
                 except base.FetchError as exc:
                     key = ("profile", alias)
                     retry_counts[key] = retry_counts.get(key, 0) + 1
+                    if is_auth_expired(exc):
+                        raise_auth_expired("profile", alias, exc, paths)
                     if exc.status == 404:
                         upsert_unresolved_alias(conn, alias, run_id, parent_map.get(alias), "profile_404", "profile endpoint returned 404")
                         log(f"profile 404 alias={alias}", paths)
@@ -999,6 +1181,8 @@ def crawl(
                 upsert_manager_check(conn, alias, run_id, expected, discovered, status, note)
                 checked.add(alias)
             except base.FetchError as exc:
+                if is_auth_expired(exc):
+                    raise_auth_expired("direct-reports", alias, exc, paths)
                 if exc.status == 404:
                     upsert_manager_check(conn, alias, run_id, person.get("direct_report_count"), 0, "fetch_404", "directReports endpoint returned 404")
                     checked.add(alias)
@@ -1027,6 +1211,12 @@ def crawl(
         finish_run(conn, run_id, "completed")
         log(f"completed {config.slug}-focused crawl run={run_id} people={len(seen)} new_people={new_people}", paths)
         return 0
+    except AuthExpiredError as exc:
+        conn.commit()
+        render_reports(conn, paths, config)
+        finish_run(conn, run_id, "auth_expired")
+        log(f"paused {config.slug}-focused crawl run={run_id} for auth refresh: {exc}", paths)
+        return AUTH_EXPIRED_EXIT_CODE
     except Exception:
         log("focused crawl failed with exception:\n" + traceback.format_exc(), paths)
         conn.commit()
@@ -1047,6 +1237,16 @@ def build_parser(config: FocusConfig) -> argparse.ArgumentParser:
         action="store_true",
         help="Refetch known people and manager checks without deleting the existing database.",
     )
+    parser.add_argument(
+        "--resume-refresh",
+        action="store_true",
+        help="Continue a failed refresh-existing pass without treating older manager checks as fresh.",
+    )
+    parser.add_argument(
+        "--resume-refresh-from-run",
+        type=int,
+        help="Anchor run id for --resume-refresh. Defaults to the latest incomplete refresh run.",
+    )
     parser.add_argument("--output-root", type=Path, default=config.output_root)
     return parser
 
@@ -1060,5 +1260,7 @@ def run_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None) -> int:
         fresh=args.fresh,
         resume=args.resume,
         refresh_existing=args.refresh_existing,
+        resume_refresh=args.resume_refresh,
+        resume_refresh_from_run=args.resume_refresh_from_run,
         output_root=args.output_root,
     )

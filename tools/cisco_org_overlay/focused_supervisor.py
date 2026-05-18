@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
 import crawler as base
-from focused_crawl import FocusConfig, ensure_focused_schema, focus_counts, latest_run, output_paths
+from focused_crawl import FocusConfig, ensure_focused_schema, focus_counts, latest_run, output_paths, refresh_anchor_from_notes
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -165,13 +165,23 @@ def refresh_session(
     raise RuntimeError(last_error or "session refresh failed")
 
 
-def spawn_crawler(config: FocusConfig, fresh: bool = False, refresh_existing: bool = False) -> subprocess.Popen:
+def spawn_crawler(
+    config: FocusConfig,
+    fresh: bool = False,
+    refresh_existing: bool = False,
+    resume_refresh: bool = False,
+    resume_refresh_from_run: Optional[int] = None,
+) -> subprocess.Popen:
     crawler_script = TOOL_DIR / config.crawler_script_name
     cmd = [sys.executable, str(crawler_script)]
     if fresh:
         cmd.append("--fresh")
     elif refresh_existing:
         cmd.append("--refresh-existing")
+    elif resume_refresh:
+        cmd.append("--resume-refresh")
+        if resume_refresh_from_run is not None:
+            cmd.extend(["--resume-refresh-from-run", str(resume_refresh_from_run)])
     else:
         cmd.append("--resume")
     proc = subprocess.Popen(
@@ -274,6 +284,40 @@ def should_stop_after_completion(conn: sqlite3.Connection) -> bool:
     )
 
 
+def run_activity(conn: sqlite3.Connection, run_id: int) -> Dict[str, int]:
+    row = conn.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM person_snapshots WHERE crawl_run_id = ?) AS snapshots,
+            (SELECT count(*) FROM manager_checks WHERE crawl_run_id = ?) AS checks,
+            (SELECT count(*) FROM org_edge_observations WHERE crawl_run_id = ?) AS edge_observations
+        """,
+        (run_id, run_id, run_id),
+    ).fetchone()
+    return dict(row) if row else {"snapshots": 0, "checks": 0, "edge_observations": 0}
+
+
+def progress_signature(conn: sqlite3.Connection) -> tuple[int, ...]:
+    info = focus_counts(conn)
+    keys = (
+        "people_count",
+        "edge_count",
+        "inactive_edge_count",
+        "manager_check_count",
+        "deficit_managers",
+        "transient_error_managers",
+        "unresolved_alias_count",
+        "residual_unresolved_alias_count",
+        "missing_people_from_edges",
+        "residual_missing_people_from_edges",
+    )
+    return tuple(int(info.get(key, 0)) for key in keys)
+
+
+def auth_refresh_anchor_for_run(row: sqlite3.Row) -> Optional[int]:
+    return refresh_anchor_from_notes(row["notes"], int(row["id"]))
+
+
 def run_supervisor_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=f"{config.crawl_label} supervisor.")
     parser.add_argument("--poll-interval", type=int, default=60)
@@ -284,6 +328,22 @@ def run_supervisor_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None
         "--refresh-existing",
         action="store_true",
         help="Start one refresh pass that refetches existing focused people without deleting the database.",
+    )
+    parser.add_argument(
+        "--resume-refresh",
+        action="store_true",
+        help="Continue a failed refresh-existing pass without deleting the database.",
+    )
+    parser.add_argument(
+        "--resume-refresh-from-run",
+        type=int,
+        help="Anchor run id for --resume-refresh. Defaults to the latest incomplete refresh run.",
+    )
+    parser.add_argument(
+        "--max-no-progress-restarts",
+        type=int,
+        default=3,
+        help="Stop after this many completed restarts that make no aggregate progress.",
     )
     parser.add_argument(
         "--session-mode",
@@ -308,6 +368,10 @@ def run_supervisor_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None
     last_error: Optional[str] = None
     probe_detail: Optional[str] = None
     refresh_existing_pending = args.refresh_existing
+    resume_refresh_pending = args.resume_refresh
+    resume_refresh_from_run = args.resume_refresh_from_run
+    no_progress_restarts = 0
+    last_progress_signature: Optional[tuple[int, ...]] = None
 
     while True:
         conn = connect_existing_db(paths.db_path)
@@ -315,6 +379,53 @@ def run_supervisor_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None
             if crawler_proc is not None and crawler_proc.poll() is not None:
                 log(f"crawler exited rc={crawler_proc.returncode}", supervisor_log)
                 crawler_proc = None
+                latest_after_exit = latest_run(conn) if conn else None
+                if latest_after_exit and latest_after_exit["status"] == "auth_expired":
+                    anchor = auth_refresh_anchor_for_run(latest_after_exit)
+                    if anchor is not None:
+                        resume_refresh_pending = True
+                        resume_refresh_from_run = resume_refresh_from_run or anchor
+                        log(
+                            f"crawler paused for auth refresh; will resume refresh from run={resume_refresh_from_run}",
+                            supervisor_log,
+                        )
+                    else:
+                        log("crawler paused for auth refresh; will restart in resume mode", supervisor_log)
+                    no_progress_restarts = 0
+                elif latest_after_exit and latest_after_exit["status"] == "completed":
+                    if should_stop_after_completion(conn):
+                        no_progress_restarts = 0
+                    else:
+                        activity = run_activity(conn, int(latest_after_exit["id"]))
+                        signature = progress_signature(conn)
+                        made_activity = any(activity.values())
+                        made_aggregate_progress = last_progress_signature is None or signature != last_progress_signature
+                        if made_activity and made_aggregate_progress:
+                            no_progress_restarts = 0
+                        else:
+                            no_progress_restarts += 1
+                            log(
+                                "completed crawler made no aggregate progress "
+                                f"restart_count={no_progress_restarts} activity={activity}",
+                                supervisor_log,
+                            )
+                        last_progress_signature = signature
+                        if no_progress_restarts >= args.max_no_progress_restarts:
+                            last_error = (
+                                "stopped after "
+                                f"{no_progress_restarts} no-progress restarts with completion blockers remaining"
+                            )
+                            write_status(
+                                conn,
+                                crawler_proc,
+                                config,
+                                last_refresh_mode,
+                                last_refresh_at,
+                                last_error,
+                                probe_detail,
+                            )
+                            log(last_error, supervisor_log)
+                            return 0
 
             latest = latest_run(conn) if conn else None
             if (
@@ -322,6 +433,7 @@ def run_supervisor_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None
                 and latest["status"] == "completed"
                 and should_stop_after_completion(conn)
                 and not refresh_existing_pending
+                and not resume_refresh_pending
             ):
                 write_status(conn, crawler_proc, config, last_refresh_mode, last_refresh_at, last_error, probe_detail)
                 log(f"{config.display_name}-focused crawl reached completion criteria", supervisor_log)
@@ -341,12 +453,17 @@ def run_supervisor_cli(config: FocusConfig, argv: Optional[Sequence[str]] = None
                     if not ok:
                         raise RuntimeError(f"directory probe failed after refresh: {probe_detail}")
                     last_error = None
+                    spawn_refresh_existing = refresh_existing_pending
+                    spawn_resume_refresh = resume_refresh_pending and not spawn_refresh_existing
                     crawler_proc = spawn_crawler(
                         config,
                         fresh=args.fresh and latest is None,
-                        refresh_existing=refresh_existing_pending,
+                        refresh_existing=spawn_refresh_existing,
+                        resume_refresh=spawn_resume_refresh,
+                        resume_refresh_from_run=resume_refresh_from_run if spawn_resume_refresh else None,
                     )
                     refresh_existing_pending = False
+                    resume_refresh_pending = False
                     log(
                         "started focused crawler: " + " ".join([sys.executable, str(TOOL_DIR / config.crawler_script_name)]),
                         supervisor_log,
